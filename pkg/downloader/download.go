@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agoda-com/macOS-vz-kubelet/pkg/downloader/tart"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/event"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/oci"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/resource"
@@ -60,6 +61,18 @@ func Download(ctx context.Context, params Params, eventRecorder event.EventRecor
 	}
 	if params.MaxAttempts == 0 {
 		params.MaxAttempts = DefaultMaxAttempts
+	}
+
+	// Sniff manifest for Tart-format images and handle them on a separate
+	// code path that reassembles Tart's LZ4-chunked disk into the on-disk
+	// layout the native puller would have produced.
+	// Per-image cache dir matches what oci.New() below uses, so subsequent
+	// runs of either puller find each other's output.
+	tartCacheDir := filepath.Join(params.StorePath, "blobs", convertToPath(params.Ref))
+	if tartCfg, isTart, tartErr := tart.SniffAndPull(ctx, params.Ref, tartCacheDir, params.Credentials, params.IgnoreExisiting); tartErr != nil {
+		return cfg, fmt.Errorf("tart pull failed: %w", tartErr)
+	} else if isTart {
+		return tartCfg, nil
 	}
 
 	store, err := oci.New(filepath.Join(params.StorePath, "blobs", convertToPath(params.Ref)), params.IgnoreExisiting, eventRecorder)

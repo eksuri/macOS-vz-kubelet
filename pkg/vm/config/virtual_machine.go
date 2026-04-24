@@ -116,10 +116,13 @@ func attachDeviceConfigurations(ctx context.Context, config *vz.VirtualMachineCo
 		graphicsDeviceConfig,
 	})
 
-	// Attach the disk image to the virtual machine
-	diskImageAttachment, err := vz.NewDiskImageStorageDeviceAttachment(
+	// Attach the disk image with explicit caching and sync modes
+	// matching Tart's defaults for macOS guests (VM.swift:402-410).
+	diskImageAttachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
 		platformConfig.BlockStoragePath,
 		false,
+		vz.DiskImageCachingModeAutomatic,
+		vz.DiskImageSynchronizationModeFull,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create disk image storage device attachment: %w", err)
@@ -173,6 +176,39 @@ func attachDeviceConfigurations(ctx context.Context, config *vz.VirtualMachineCo
 	}
 	config.SetAudioDevicesVirtualMachineConfiguration([]vz.AudioDeviceConfiguration{
 		audioDeviceConfig,
+	})
+
+	// Entropy source — feeds /dev/random so early-boot crypto doesn't
+	// stall. Tart sets this unconditionally (VM.swift:416-419).
+	entropyCfg, err := vz.NewVirtioEntropyDeviceConfiguration()
+	if err != nil {
+		return fmt.Errorf("failed to create virtio entropy device configuration: %w", err)
+	}
+	config.SetEntropyDevicesVirtualMachineConfiguration([]*vz.VirtioEntropyDeviceConfiguration{entropyCfg})
+
+	// Memory balloon — lets the host reclaim unused guest memory.
+	balloonCfg, err := vz.NewVirtioTraditionalMemoryBalloonDeviceConfiguration()
+	if err != nil {
+		return fmt.Errorf("failed to create virtio memory balloon configuration: %w", err)
+	}
+	config.SetMemoryBalloonDevicesVirtualMachineConfiguration([]vz.MemoryBalloonDeviceConfiguration{balloonCfg})
+
+	// Tart-version console — creates /dev/cu.tart-version-2.0.0 in the
+	// guest so tart-guest-agent's self-check passes (requires major >= 2).
+	// Mirrors Tart VM.swift:427-437.
+	tartVersionPort, err := vz.NewVirtioConsolePortConfiguration(
+		vz.WithVirtioConsolePortConfigurationName("tart-version-2.0.0"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create tart-version console port: %w", err)
+	}
+	tartVersionDevice, err := vz.NewVirtioConsoleDeviceConfiguration()
+	if err != nil {
+		return fmt.Errorf("failed to create tart-version console device: %w", err)
+	}
+	tartVersionDevice.SetVirtioConsolePortConfiguration(0, tartVersionPort)
+	config.SetConsoleDevicesVirtualMachineConfiguration([]vz.ConsoleDeviceConfiguration{
+		tartVersionDevice,
 	})
 
 	return nil

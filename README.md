@@ -1,5 +1,81 @@
 # macOS Virtualization Kubelet - Run native macOS workloads on Kubernetes
 
+> **Fork note:** This fork adds support for [Cirruslabs Tart](https://github.com/cirruslabs/tart) OCI images, allowing you to run pre-built macOS VM images like `ghcr.io/cirruslabs/macos-sonoma-base:latest` directly as Kubernetes pods on Apple Silicon hosts. No custom image tooling required — just `kubectl apply` with a standard Tart image reference.
+
+## Tart Image Support (this fork)
+
+### What's new
+
+The upstream project requires VM images in Agoda's custom OCI format, built with their proprietary tooling ([oras-macos-vz](https://github.com/agoda-com/oras-macos-vz)). This fork adds a Tart-compatible image puller that can download and boot standard [Cirruslabs Tart macOS images](https://github.com/cirruslabs/macos-image-templates) from any OCI registry.
+
+This means you can use any of the public Cirruslabs images:
+- `ghcr.io/cirruslabs/macos-sonoma-base:latest`
+- `ghcr.io/cirruslabs/macos-sonoma-xcode:latest`
+- `ghcr.io/cirruslabs/macos-sequoia-base:latest`
+- Or any Tart-format image you build yourself
+
+### How it works
+
+1. The puller detects Tart-format OCI manifests by their layer media types (`application/vnd.cirruslabs.tart.disk.v2`, etc.)
+2. Downloads and decompresses LZ4-compressed disk chunks using Apple's Compression framework streaming API
+3. Reassembles the raw disk image and translates the Tart VM config to the format vz-kubelet expects
+4. Boots the VM using Apple's Virtualization.framework with Tart-compatible device configuration (entropy, memory balloon, tart-version console port for guest agent compatibility, disk caching)
+
+### Quick start
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: macos-sonoma
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: mac-vz-node
+  tolerations:
+    - key: "virtual-kubelet.io/provider"
+      operator: "Exists"
+      effect: "NoSchedule"
+  containers:
+    - name: macos
+      image: ghcr.io/cirruslabs/macos-sonoma-base:latest
+      resources:
+        requests:
+          cpu: "4"
+          memory: "8Gi"
+        limits:
+          cpu: "4"
+          memory: "8Gi"
+```
+
+```bash
+kubectl apply -f macos-pod.yaml
+# Pod gets IP in ~25 seconds, SSH with admin:admin
+```
+
+### VM configuration additions
+
+This fork adds the following Virtualization.framework devices to match Tart's VM configuration:
+
+| Device | Purpose |
+|--------|---------|
+| Virtio entropy | Feeds `/dev/random` so early-boot crypto doesn't stall |
+| Memory balloon | Guest cooperatively returns unused memory to the host |
+| Tart-version console | Creates `/dev/cu.tart-version-2.0.0` in guest so tart-guest-agent's self-check passes |
+| Disk caching (automatic/full) | Host page cache accelerates repeated disk reads |
+
+### Changes from upstream
+
+See the [`tart-image-support`](../../tree/tart-image-support) branch. Key files:
+- `pkg/downloader/tart/` — Tart image puller, LZ4 streaming decoder, manifest types
+- `pkg/downloader/download.go` — Hook to detect and route Tart-format images
+- `pkg/vm/config/virtual_machine.go` — Additional VZ devices (entropy, balloon, console, disk caching)
+
+---
+
+*Original README follows:*
+
+---
+
 `macOS-vz-kubelet` bridges the worlds of Kubernetes and native macOS workloads. It enables macOS hosts to act as Kubernetes nodes, allowing you to deploy and manage macOS Virtual Machines at scale. The project also supports running Docker containers alongside macOS VMs within the same Pod, providing flexibility for hybrid workloads.
 
 See [examples](example) directory for pod manifests, such as a [macOS VM pod](example/pod.yml) and a [hybrid pod with macOS VM and Docker side-car container](example/pod-gitlab-sidecar.yml).
